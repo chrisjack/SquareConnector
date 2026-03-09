@@ -1,0 +1,18 @@
+vendor
+.DS_Store
+._*
+.device-analysis/
+.app-analysis/
+.playwright-mcp/
+*.resources
+resources/
+
+# Compiled binaries
+squaregolf-connector
+squaregolf-connector.exe
+*.exe
+
+# User config and data
+.squaregolf-connector/
+.env*
+*.log

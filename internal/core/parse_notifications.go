@@ -1,0 +1,203 @@
+package core
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+)
+
+// SensorData represents data from the sensor
+type SensorData struct {
+	RawData      []string `json:"rawData,omitempty"`
+	BallReady    bool     `json:"ballReady"`
+	BallDetected bool     `json:"ballDetected"`
+	PositionX    int32    `json:"positionX"`
+	PositionY    int32    `json:"positionY"`
+	PositionZ    int32    `json:"positionZ"`
+}
+
+// BallMetrics represents ball metrics from a shot
+type BallMetrics struct {
+	RawData         []string  `json:"rawData,omitempty"`
+	BallSpeedMPS    float64   `json:"speed"`
+	VerticalAngle   float64   `json:"launchAngle"`
+	HorizontalAngle float64   `json:"horizontalAngle"`
+	TotalspinRPM    int16     `json:"totalSpin"`
+	SpinAxis        float64   `json:"spinAxis"`
+	BackspinRPM     int16     `json:"backSpin"`
+	SidespinRPM     int16     `json:"sideSpin"`
+	ShotType        ShotType  `json:"shotType"`
+}
+
+// ClubMetrics represents club metrics from a shot
+type ClubMetrics struct {
+	RawData          []string  `json:"rawData,omitempty"`
+	PathAngle        float64   `json:"path"`
+	FaceAngle        float64   `json:"angle"`
+	AttackAngle      float64   `json:"attackAngle"`
+	DynamicLoftAngle float64   `json:"dynamicLoft"`
+}
+
+// AlignmentData represents device alignment/aim information
+type AlignmentData struct {
+	RawData   []string `json:"rawData,omitempty"`
+	AimAngle  float64  `json:"aimAngle"`  // Degrees left (negative) or right (positive) of center
+	IsAligned bool     `json:"isAligned"` // Whether device is pointing at target (within ±2° threshold)
+}
+
+// ParseSensorData parses raw sensor data bytes
+func ParseSensorData(bytesList []string) (*SensorData, error) {
+	if len(bytesList) < 17 {
+		return nil, fmt.Errorf("insufficient data for parsing sensor data")
+	}
+
+	sensorData := &SensorData{
+		RawData:      bytesList,
+		BallReady:    bytesList[3] == "01" || bytesList[3] == "02",
+		BallDetected: bytesList[4] == "01",
+	}
+
+	// Parse position data
+	posXBytes, err := hex.DecodeString(bytesList[5] + bytesList[6] + bytesList[7] + bytesList[8])
+	if err == nil && len(posXBytes) == 4 {
+		sensorData.PositionX = int32(binary.LittleEndian.Uint32(posXBytes))
+	}
+
+	posYBytes, err := hex.DecodeString(bytesList[9] + bytesList[10] + bytesList[11] + bytesList[12])
+	if err == nil && len(posYBytes) == 4 {
+		sensorData.PositionY = int32(binary.LittleEndian.Uint32(posYBytes))
+	}
+
+	posZBytes, err := hex.DecodeString(bytesList[13] + bytesList[14] + bytesList[15] + bytesList[16])
+	if err == nil && len(posZBytes) == 4 {
+		sensorData.PositionZ = int32(binary.LittleEndian.Uint32(posZBytes))
+	}
+
+	return sensorData, nil
+}
+
+// ParseShotBallMetrics parses ball metrics from shot data
+func ParseShotBallMetrics(bytesList []string) (*BallMetrics, error) {
+	if len(bytesList) < 17 {
+		return nil, fmt.Errorf("insufficient data for parsing ball metrics")
+	}
+
+	metrics := &BallMetrics{
+		RawData: bytesList,
+	}
+
+	// Determine shot type from header
+	if len(bytesList) >= 3 {
+		if bytesList[2] == "37" {
+			metrics.ShotType = ShotTypeFull
+		} else if bytesList[2] == "13" {
+			metrics.ShotType = ShotTypePutt
+		}
+	}
+
+	// Parse ball speed
+	ballSpeedBytes, err := hex.DecodeString(bytesList[3] + bytesList[4])
+	if err == nil && len(ballSpeedBytes) == 2 {
+		metrics.BallSpeedMPS = float64(int16(binary.LittleEndian.Uint16(ballSpeedBytes))) / 100.0
+	}
+
+	// Parse vertical angle
+	verticalAngleBytes, err := hex.DecodeString(bytesList[5] + bytesList[6])
+	if err == nil && len(verticalAngleBytes) == 2 {
+		metrics.VerticalAngle = float64(int16(binary.LittleEndian.Uint16(verticalAngleBytes))) / 100.0
+	}
+
+	// Parse horizontal angle
+	horizontalAngleBytes, err := hex.DecodeString(bytesList[7] + bytesList[8])
+	if err == nil && len(horizontalAngleBytes) == 2 {
+		metrics.HorizontalAngle = float64(int16(binary.LittleEndian.Uint16(horizontalAngleBytes))) / 100.0
+	}
+
+	// Parse total spin
+	totalSpinBytes, err := hex.DecodeString(bytesList[9] + bytesList[10])
+	if err == nil && len(totalSpinBytes) == 2 {
+		metrics.TotalspinRPM = int16(binary.LittleEndian.Uint16(totalSpinBytes))
+	}
+
+	// Parse spin axis
+	spinAxisBytes, err := hex.DecodeString(bytesList[11] + bytesList[12])
+	if err == nil && len(spinAxisBytes) == 2 {
+		metrics.SpinAxis = float64(int16(binary.LittleEndian.Uint16(spinAxisBytes))) / 100.0
+	}
+
+	// Parse backspin
+	backspinBytes, err := hex.DecodeString(bytesList[13] + bytesList[14])
+	if err == nil && len(backspinBytes) == 2 {
+		metrics.BackspinRPM = int16(binary.LittleEndian.Uint16(backspinBytes))
+	}
+
+	// Parse sidespin
+	sidespinBytes, err := hex.DecodeString(bytesList[15] + bytesList[16])
+	if err == nil && len(sidespinBytes) == 2 {
+		metrics.SidespinRPM = int16(binary.LittleEndian.Uint16(sidespinBytes))
+	}
+
+	return metrics, nil
+}
+
+// ParseShotClubMetrics parses club metrics from shot data
+func ParseShotClubMetrics(bytesList []string) (*ClubMetrics, error) {
+	if len(bytesList) < 11 {
+		return nil, fmt.Errorf("insufficient data for parsing club metrics")
+	}
+
+	metrics := &ClubMetrics{
+		RawData: bytesList,
+	}
+
+	// Parse path angle
+	pathAngleBytes, err := hex.DecodeString(bytesList[3] + bytesList[4])
+	if err == nil && len(pathAngleBytes) == 2 {
+		metrics.PathAngle = float64(int16(binary.LittleEndian.Uint16(pathAngleBytes))) / 100.0
+	}
+
+	// Parse face angle
+	faceAngleBytes, err := hex.DecodeString(bytesList[5] + bytesList[6])
+	if err == nil && len(faceAngleBytes) == 2 {
+		metrics.FaceAngle = float64(int16(binary.LittleEndian.Uint16(faceAngleBytes))) / 100.0
+	}
+
+	// Parse attack angle
+	attackAngleBytes, err := hex.DecodeString(bytesList[7] + bytesList[8])
+	if err == nil && len(attackAngleBytes) == 2 {
+		metrics.AttackAngle = float64(int16(binary.LittleEndian.Uint16(attackAngleBytes))) / 100.0
+	}
+
+	// Parse dynamic loft angle
+	loftAngleBytes, err := hex.DecodeString(bytesList[9] + bytesList[10])
+	if err == nil && len(loftAngleBytes) == 2 {
+		metrics.DynamicLoftAngle = float64(int16(binary.LittleEndian.Uint16(loftAngleBytes))) / 100.0
+	}
+
+	return metrics, nil
+}
+
+// ParseAlignmentData parses alignment/aim data from device accelerometer
+func ParseAlignmentData(bytesList []string) (*AlignmentData, error) {
+	// Format: 11 04 {seq} {status} 00 {angle_int16} ...
+	// Angle is signed 16-bit little-endian at bytes 5-6, divided by 100.0
+	// Negative = left, positive = right
+	if len(bytesList) < 7 {
+		return nil, fmt.Errorf("insufficient data for parsing alignment data (need at least 7 bytes, got %d)", len(bytesList))
+	}
+
+	alignment := &AlignmentData{
+		RawData: bytesList,
+	}
+
+	angleBytes, err := hex.DecodeString(bytesList[5] + bytesList[6])
+	if err == nil && len(angleBytes) == 2 {
+		angleRaw := int16(binary.LittleEndian.Uint16(angleBytes))
+		alignment.AimAngle = float64(angleRaw) / 100.0
+	}
+
+	const alignmentThreshold = 2.0
+	alignment.IsAligned = alignment.AimAngle >= -alignmentThreshold && alignment.AimAngle <= alignmentThreshold
+
+	return alignment, nil
+}

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SquareGolf Connector</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/device.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h2>SquareGolf</h2>
+                <div class="app-subtitle">Unofficial Connector</div>
+            </div>
+
+            <div class="nav-menu">
+                <button class="nav-button active" data-screen="device">
+                    <span class="material-icons">bluetooth</span>
+                    Device
+                </button>
+                <button class="nav-button" data-screen="gspro">
+                    <span class="material-icons">computer</span>
+                    GSPro
+                </button>
+                <button class="nav-button" data-screen="infiniteTees">
+                    <span class="material-icons">golf_course</span>
+                    Infinite Tees
+                </button>
+                <button class="nav-button" data-screen="openConnect">
+                    <span class="material-icons">hub</span>
+                    OpenConnect
+                </button>
+                <button class="nav-button" data-screen="settings">
+                    <span class="material-icons">settings</span>
+                    Settings
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Global Status Bar -->
+            <div class="global-status-bar compact" id="statusBar">
+                <h1 class="page-title" id="pageTitle">Device</h1>
+                <div class="status-item" id="statusWebSocket">
+                    <span class="status-icon material-icons">cloud</span>
+                    <span class="status-label">Server</span>
+                    <span class="status-dot"></span>
+                </div>
+                <div class="status-item" id="statusDevice">
+                    <span class="status-icon material-icons">bluetooth</span>
+                    <span class="status-label">Device</span>
+                    <span class="status-dot"></span>
+                </div>
+                <div class="status-item" id="statusGSPro">
+                    <span class="status-icon material-icons">computer</span>
+                    <span class="status-label">GSPro</span>
+                    <span class="status-dot"></span>
+                </div>
+                <div class="status-item" id="statusInfiniteTees">
+                    <span class="status-icon material-icons">golf_course</span>
+                    <span class="status-label">IT</span>
+                    <span class="status-dot"></span>
+                </div>
+                <div class="status-item" id="statusOpenConnect">
+                    <span class="status-icon material-icons">hub</span>
+                    <span class="status-label">OC</span>
+                    <span class="status-dot"></span>
+                </div>
+                <div class="status-item" id="statusBallReady">
+                    <span class="status-icon material-icons">sports_golf</span>
+                    <span class="status-label">Ball Ready</span>
+                    <span class="status-dot"></span>
+                </div>
+            </div>
+
+            <!-- Device Screen (Unified) -->
+            <div class="screen active" id="deviceScreen">
+                <!-- Connection Header -->
+                <div class="device-header">
+                    <div class="device-connection-status disconnected" id="deviceConnectionStatus">
+                        <span class="material-icons">bluetooth_disabled</span>
+                        <span class="device-status-text" id="deviceStatus">Disconnected</span>
+                    </div>
+                    <div class="device-info-inline" id="deviceInfoInline" style="display: none;">
+                        <span class="device-name" id="connectedDeviceName"></span>
+                        <span class="battery" id="batteryInline">
+                            <span id="batteryLevel">-</span>
+                        </span>
+                    </div>
+                    <div class="connection-actions">
+                        <button class="btn btn-primary" id="connectBtn">Connect</button>
+                        <button class="btn btn-secondary" id="disconnectBtn" disabled>Disconnect</button>
+                        <button class="btn-icon" id="calibrateBtn" title="Calibrate Alignment" style="display: none;">
+                            <span class="material-icons">tune</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="error-message" id="deviceError" style="display: none;"></div>
+            </div>
+
+            <!-- Ball Position Overlay (floating) -->
+            <div class="ball-overlay" id="ballOverlay">
+                <svg class="ball-position-svg" viewBox="0 0 140 170" id="ballPositionSvg">
+                    <defs>
+                        <pattern id="gridSmall" width="28" height="28" patternUnits="userSpaceOnUse">
+                            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#2a3f5f" stroke-width="0.5"/>
+                        </pattern>
+                    </defs>
+                    <rect width="140" height="170" fill="url(#gridSmall)" />
+                    <line x1="70" y1="0" x2="70" y2="170" stroke="#64748b" stroke-width="0.5" stroke-dasharray="3,3"/>
+                    <line x1="0" y1="85" x2="140" y2="85" stroke="#64748b" stroke-width="0.5" stroke-dasharray="3,3"/>
+                    <rect x="43" y="58" width="54" height="54" fill="none" stroke="#6b7280" stroke-width="1" stroke-dasharray="3,3"/>
+                    <circle id="ballDot" cx="70" cy="85" r="6" fill="#ef4444" stroke="#fff" stroke-width="2" style="display: none;"/>
+                </svg>
+            </div>
+
+            <!-- Shot Metrics Bar (fixed bottom) -->
+            <div class="metrics-bar" id="metricsBar">
+                <div class="metrics-row">
+                    <span class="row-label">BALL</span>
+                    <div class="metric-item"><span class="metric-label">Speed</span><span class="metric-value" id="metricBallSpeed">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Launch</span><span class="metric-value" id="metricLaunchAngle">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Dir</span><span class="metric-value" id="metricDirection">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Total</span><span class="metric-value" id="metricTotalSpin">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Back</span><span class="metric-value" id="metricBackSpin">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Side</span><span class="metric-value" id="metricSideSpin">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Axis</span><span class="metric-value" id="metricSpinAxis">-</span></div>
+                </div>
+                <div class="metrics-row">
+                    <span class="row-label">CLUB</span>
+                    <div class="metric-item"><span class="metric-label">Attack</span><span class="metric-value" id="metricAttackAngle">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Path</span><span class="metric-value" id="metricClubPath">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Face</span><span class="metric-value" id="metricFaceAngle">-</span></div>
+                    <div class="metric-item"><span class="metric-label">Loft</span><span class="metric-value" id="metricDynamicLoft">-</span></div>
+                    <div class="metric-item"></div>
+                    <div class="metric-item"></div>
+                    <div class="metric-item"></div>
+                </div>
+            </div>
+
+            <!-- Alignment Panel (slide-in, hidden by default) -->
+            <div class="alignment-overlay" id="alignmentOverlay" style="display: none;"></div>
+            <div class="alignment-panel" id="alignmentPanel" style="display: none;">
+                <div class="panel-header">
+                    <h3>Device Alignment</h3>
+                    <button class="btn-close" id="closeAlignmentBtn">
+                        <span class="material-icons">close</span>
+                    </button>
+                </div>
+                <div class="panel-content alignment-display">
+                    <div class="error-message" id="alignmentError" style="display: none;">
+                        <p class="error-text"></p>
+                        <button class="btn btn-primary btn-sm" id="retryAlignmentBtn">Retry</button>
+                    </div>
+                    <div class="compass-container">
+                        <svg class="compass-svg" viewBox="0 0 200 200" id="compassSvg">
+                            <circle cx="100" cy="100" r="90" fill="none" stroke="#2a3f5f" stroke-width="2"/>
+                            <path id="targetZone" d="" fill="#22c55e" fill-opacity="0.2" stroke="#22c55e" stroke-width="2"/>
+                            <line x1="100" y1="20" x2="100" y2="30" stroke="#64748b" stroke-width="2"/>
+                            <line x1="170" y1="100" x2="180" y2="100" stroke="#64748b" stroke-width="1"/>
+                            <line x1="100" y1="170" x2="100" y2="180" stroke="#64748b" stroke-width="1"/>
+                            <line x1="20" y1="100" x2="30" y2="100" stroke="#64748b" stroke-width="1"/>
+                            <circle cx="100" cy="100" r="5" fill="#64748b"/>
+                            <g id="aimPointer" transform="rotate(0 100 100)">
+                                <line x1="100" y1="100" x2="100" y2="30" stroke="#3b82f6" stroke-width="4" stroke-linecap="round"/>
+                                <circle cx="100" cy="30" r="8" fill="#3b82f6"/>
+                            </g>
+                        </svg>
+                    </div>
+                    <div class="alignment-numbers">
+                        <div class="alignment-angle" id="alignmentAngle">0.0°</div>
+                        <div class="alignment-direction" id="alignmentDirection">Aimed straight</div>
+                    </div>
+                    <div class="aligned-status" id="alignedStatus">
+                        <span class="aligned-icon">⚪</span>
+                        <span class="aligned-text">Waiting for data...</span>
+                    </div>
+                    <div class="handedness-toggle">
+                        <button class="handedness-btn" id="leftHandedBtn">Left</button>
+                        <button class="handedness-btn active" id="rightHandedBtn">Right</button>
+                    </div>
+                </div>
+                <div class="alignment-actions">
+                    <button class="btn btn-secondary" id="cancelAlignmentBtn">Cancel</button>
+                    <button class="btn btn-primary" id="saveAlignmentBtn">Save Calibration</button>
+                </div>
+            </div>
+
+
+            <!-- GSPro Screen -->
+            <div class="screen" id="gsproScreen">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Connection Status</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="status-row">
+                            <span class="status-label">Status:</span>
+                            <span class="status-value" id="gsproStatus">Disconnected</span>
+                        </div>
+                        <div class="error-message" id="gsproError" style="display: none;"></div>
+
+                        <div class="button-group">
+                            <button class="btn btn-primary" id="gsproConnectBtn">Connect to GSPro</button>
+                            <button class="btn btn-secondary" id="gsproDisconnectBtn" disabled>Disconnect</button>
+                        </div>
+                        <div class="button-group" style="margin-top: 12px;">
+                            <button class="btn btn-primary" id="gsproArmBtn" disabled>
+                                <span class="material-icons" style="font-size: 18px; vertical-align: middle; margin-right: 4px;">sports_golf</span>
+                                Arm Ball Detection
+                            </button>
+                        </div>
+                        <p style="font-size: 12px; color: var(--text-muted, #94a3b8); margin-top: 6px;">
+                            Manually trigger ball detection if the device does not arm automatically after connecting.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Infinite Tees Screen -->
+            <div class="screen" id="infiniteTeesScreen">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Connection Status</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="status-row">
+                            <span class="status-label">Status:</span>
+                            <span class="status-value" id="infiniteTeesStatus">Disconnected</span>
+                        </div>
+                        <div class="error-message" id="infiniteTeesError" style="display: none;"></div>
+
+                        <div class="button-group">
+                            <button class="btn btn-primary" id="infiniteTeesConnectBtn">Connect to Infinite Tees</button>
+                            <button class="btn btn-secondary" id="infiniteTeesDisconnectBtn" disabled>Disconnect</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>About Infinite Tees</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="troubleshooting-info">
+                            <p>Infinite Tees is a golf simulator that supports the GSPro connector protocol.</p>
+                            <p><strong>Note:</strong> Only connect to one simulator at a time (either GSPro or Infinite Tees).</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- OpenConnect Screen -->
+            <div class="screen" id="openConnectScreen">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Connection Status</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="status-row">
+                            <span class="status-label">Status:</span>
+                            <span class="status-value" id="openConnectStatus">Disconnected</span>
+                        </div>
+                        <div class="error-message" id="openConnectError" style="display: none;"></div>
+
+                        <div class="button-group">
+                            <button class="btn btn-primary" id="openConnectConnectBtn">Connect</button>
+                            <button class="btn btn-secondary" id="openConnectDisconnectBtn" disabled>Disconnect</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>About OpenConnect</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="troubleshooting-info">
+                            <p>OpenConnect is a universal adapter for any golf simulator software that supports the OpenConnect/GSPro protocol (OpenGolfSim, DrillsGolf, etc.).</p>
+                            <p><strong>Key feature:</strong> Includes player handedness and club data with every shot, so your simulator always knows you're playing left or right-handed.</p>
+                            <p>Configure handedness in the Settings tab.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Screen -->
+            <div class="screen" id="settingsScreen">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Device Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label>Spin Detection Mode:</label>
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input type="radio" name="spinMode" value="standard">
+                                    <div>
+                                        <strong>Standard (Unmarked Balls)</strong>
+                                        <p class="helper-text">Use with regular golf balls. Provides estimated spin measurements. Lower CPU usage.</p>
+                                    </div>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="spinMode" value="advanced" checked>
+                                    <div>
+                                        <strong>Advanced (Marked Balls)</strong>
+                                        <p class="helper-text">Use with specially marked/dotted golf balls for accurate spin data through camera tracking.</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Player Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label>Handedness:</label>
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input type="radio" name="handedness" value="right" checked>
+                                    <div><strong>Right-handed</strong></div>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="handedness" value="left">
+                                    <div><strong>Left-handed</strong></div>
+                                </label>
+                            </div>
+                            <p class="helper-text">This setting is saved and persists across sessions. The Square device will always be configured for your selected hand.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>GSPro Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="gsproAutoConnect">
+                                Connect to GSPro automatically
+                            </label>
+                            <p class="helper-text">When enabled, automatically connects to GSPro when the device connects.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="gsproIP">GSPro IP Address:</label>
+                            <input type="text" id="gsproIP" class="input-field" value="127.0.0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="gsproPort">GSPro Port:</label>
+                            <input type="number" id="gsproPort" class="input-field" value="921">
+                        </div>
+                        <p class="helper-text">These settings rarely need to be changed. Default is localhost (127.0.0.1) on port 921.</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Infinite Tees Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="infiniteTeesAutoConnect">
+                                Connect to Infinite Tees automatically
+                            </label>
+                            <p class="helper-text">When enabled, automatically connects to Infinite Tees when the device connects.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="infiniteTeesIP">Infinite Tees IP Address:</label>
+                            <input type="text" id="infiniteTeesIP" class="input-field" value="127.0.0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="infiniteTeesPort">Infinite Tees Port:</label>
+                            <input type="number" id="infiniteTeesPort" class="input-field" value="999">
+                        </div>
+                        <p class="helper-text">Default is localhost (127.0.0.1) on port 999.</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>OpenConnect Settings</h3>
+                    </div>
+                    <div class="card-content">
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="openConnectAutoConnect">
+                                Connect to OpenConnect automatically
+                            </label>
+                            <p class="helper-text">When enabled, automatically connects to the OpenConnect simulator when the device connects.</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="openConnectIP">OpenConnect IP Address:</label>
+                            <input type="text" id="openConnectIP" class="input-field" value="127.0.0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="openConnectPort">OpenConnect Port:</label>
+                            <input type="number" id="openConnectPort" class="input-field" value="922">
+                        </div>
+                        <p class="helper-text">Default is localhost (127.0.0.1) on port 922.</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>About</h3>
+                    </div>
+                    <div class="card-content">
+                        <p class="helper-text">
+                            <strong>SquareGolf Connector</strong> is an unofficial connector for SquareGolf launch monitors.
+                            <br><a href="https://github.com/byates/squaregolf-connector" target="_blank" style="color: #3b82f6;">View Documentation on GitHub</a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="loading-text">Connecting...</div>
+    </div>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
