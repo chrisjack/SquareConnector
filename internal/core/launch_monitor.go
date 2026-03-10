@@ -108,6 +108,8 @@ func (lm *LaunchMonitor) NotificationHandler(uuid string, data []byte) {
 			if bytesList[0] == "11" && bytesList[1] == "07" && bytesList[2] == "00" {
 				// Clear club metrics in state manager to indicate no data is available
 				lm.stateManager.SetLastClubMetrics(nil)
+				// Re-activate ball detection so the device searches for the next ball
+				lm.reactivateBallDetection()
 				return
 			}
 		}
@@ -198,6 +200,9 @@ func (lm *LaunchMonitor) HandleShotClubMetrics(bytesList []string) {
 
 	// Update state manager with club metrics
 	lm.stateManager.SetLastClubMetrics(clubMetrics)
+
+	// Re-activate ball detection so the device searches for the next ball
+	lm.reactivateBallDetection()
 }
 
 // SendCommand sends a command to the BLE device
@@ -310,6 +315,25 @@ func (lm *LaunchMonitor) DeactivateBallDetection() error {
 	}
 
 	return nil
+}
+
+// reactivateBallDetection re-activates ball detection after a shot completes,
+// so the device automatically starts searching for the next ball.
+func (lm *LaunchMonitor) reactivateBallDetection() {
+	go func() {
+		// Small delay to let the device finish processing the shot
+		time.Sleep(500 * time.Millisecond)
+
+		if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+			return
+		}
+
+		log.Println("LaunchMonitor: Re-activating ball detection after shot")
+		err := lm.ActivateBallDetection()
+		if err != nil {
+			log.Printf("LaunchMonitor: Failed to re-activate ball detection: %v", err)
+		}
+	}()
 }
 
 // Helper functions
