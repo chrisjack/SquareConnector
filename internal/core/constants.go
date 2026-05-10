@@ -93,6 +93,61 @@ const (
 	Advanced
 )
 
+// SwingStickMode represents when the device should use the swing-stick
+// protocol variant instead of regular club commands. Mirrors the
+// official Square app's three-state preference.
+type SwingStickMode int
+
+const (
+	// SwingStickOff — never use swing stick (regular ClubCommand for
+	// every club). Default.
+	SwingStickOff SwingStickMode = iota
+	// SwingStickDriverWoods — use swing stick only for driver/woods.
+	SwingStickDriverWoods
+	// SwingStickAll — use swing stick for every club.
+	SwingStickAll
+)
+
+// String returns the JSON-friendly name for a SwingStickMode.
+func (m SwingStickMode) String() string {
+	switch m {
+	case SwingStickDriverWoods:
+		return "driver-woods"
+	case SwingStickAll:
+		return "all"
+	default:
+		return "off"
+	}
+}
+
+// ParseSwingStickMode parses the JSON-friendly name into a
+// SwingStickMode. Unknown values fall back to SwingStickOff so we
+// never silently send malformed BLE bytes.
+func ParseSwingStickMode(s string) SwingStickMode {
+	switch s {
+	case "driver-woods":
+		return SwingStickDriverWoods
+	case "all":
+		return SwingStickAll
+	default:
+		return SwingStickOff
+	}
+}
+
+// IsDriverOrWood reports whether a club is in the driver/woods set.
+// Used by SwingStickDriverWoods to decide whether to send a swing-stick
+// command for the active club.
+func IsDriverOrWood(club ClubType) bool {
+	switch club.RegularCode {
+	case ClubDriver.RegularCode,
+		ClubWood3.RegularCode,
+		ClubWood5.RegularCode,
+		ClubWood7.RegularCode:
+		return true
+	}
+	return false
+}
+
 // ClubType represents the different types of golf clubs
 type ClubType struct {
 	RegularCode    string

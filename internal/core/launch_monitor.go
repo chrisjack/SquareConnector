@@ -309,9 +309,23 @@ func (lm *LaunchMonitor) ActivateBallDetection() error {
 		spinMode = &defaultSpinMode
 	}
 
-	// Send club command
+	// Send club command — branch to the swing-stick variant when the
+	// user has opted into it. Mirrors the official Square app's
+	// preference: never / driver-and-woods / always.
 	seq := lm.getNextSequence()
-	clubCommand := ClubCommand(seq, *club, *handedness)
+	useSwingStick := false
+	switch lm.stateManager.GetSwingStickMode() {
+	case SwingStickAll:
+		useSwingStick = true
+	case SwingStickDriverWoods:
+		useSwingStick = IsDriverOrWood(*club)
+	}
+	var clubCommand string
+	if useSwingStick {
+		clubCommand = SwingStickCommand(seq, *club, *handedness)
+	} else {
+		clubCommand = ClubCommand(seq, *club, *handedness)
+	}
 
 	err := lm.SendCommand(clubCommand)
 	if err != nil {

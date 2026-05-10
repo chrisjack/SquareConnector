@@ -32,6 +32,7 @@ type AppState struct {
 	OpenConnectStatus         OpenConnectConnectionStatus
 	OpenConnectError          error
 	SpinMode             *SpinMode
+	SwingStickMode    SwingStickMode
 	CameraURL         *string
 	CameraEnabled     bool
 	IsAligning        bool    // Whether alignment mode UI is active
@@ -609,6 +610,20 @@ func (sm *StateManager) RegisterSpinModeCallback(callback StateCallback[*SpinMod
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.callbacks.SpinMode = append(sm.callbacks.SpinMode, callback)
+}
+
+// GetSwingStickMode returns the current swing-stick preference.
+func (sm *StateManager) GetSwingStickMode() SwingStickMode {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.state.SwingStickMode
+}
+
+// SetSwingStickMode sets the current swing-stick preference.
+func (sm *StateManager) SetSwingStickMode(value SwingStickMode) {
+	sm.mu.Lock()
+	sm.state.SwingStickMode = value
+	sm.mu.Unlock()
 }
 
 // GetCameraURL returns the camera URL

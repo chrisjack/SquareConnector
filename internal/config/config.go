@@ -14,6 +14,14 @@ type Settings struct {
 	DeviceName              string `json:"deviceName"`
 	SpinMode                string `json:"spinMode"`
 	Handedness              string `json:"handedness"`
+	// SwingStickMode controls when the device is told to use the
+	// Square swing-stick protocol variant instead of the regular
+	// club command. Mirrors the official Square app's three-state
+	// preference. Values:
+	//   "off"          — never use swing stick (regular club mode)
+	//   "driver-woods" — use swing stick for driver and woods only
+	//   "all"          — use swing stick for every club
+	SwingStickMode          string `json:"swingStickMode"`
 	GSProIP                 string `json:"gsproIP"`
 	GSProPort               int    `json:"gsproPort"`
 	GSProAutoConnect        bool   `json:"gsproAutoConnect"`
@@ -25,6 +33,9 @@ type Settings struct {
 	OpenConnectAutoConnect  bool   `json:"openConnectAutoConnect"`
 	CameraURL               string `json:"cameraURL"`
 	CameraEnabled           bool   `json:"cameraEnabled"`
+	// SoundEnabled toggles the in-app audio cues (e.g. the
+	// "ball ready" chime). Default true.
+	SoundEnabled            bool   `json:"soundEnabled"`
 }
 
 // Manager handles loading and saving configuration
@@ -70,6 +81,7 @@ func (m *Manager) initialize() {
 		DeviceName:              "",
 		SpinMode:                "advanced",
 		Handedness:              "right",
+		SwingStickMode:          "off",
 		GSProIP:                 "127.0.0.1",
 		GSProPort:               921,
 		GSProAutoConnect:        false,
@@ -81,6 +93,7 @@ func (m *Manager) initialize() {
 		OpenConnectAutoConnect:  false,
 		CameraURL:               "http://localhost:5000",
 		CameraEnabled:           false,
+		SoundEnabled:            true,
 	}
 
 	// Try to load existing settings
@@ -155,6 +168,29 @@ func (m *Manager) SetDeviceName(name string) error {
 func (m *Manager) SetSpinMode(spinMode string) error {
 	m.mu.Lock()
 	m.settings.SpinMode = spinMode
+	m.mu.Unlock()
+	return m.Save()
+}
+
+// SetSwingStickMode persists the swing-stick preference. Accepts
+// "off", "driver-woods", or "all"; any other value is coerced to
+// "off" so we never silently misuse the BLE protocol.
+func (m *Manager) SetSwingStickMode(mode string) error {
+	switch mode {
+	case "off", "driver-woods", "all":
+		// valid
+	default:
+		mode = "off"
+	}
+	m.mu.Lock()
+	m.settings.SwingStickMode = mode
+	m.mu.Unlock()
+	return m.Save()
+}
+
+func (m *Manager) SetSoundEnabled(enabled bool) error {
+	m.mu.Lock()
+	m.settings.SoundEnabled = enabled
 	m.mu.Unlock()
 	return m.Save()
 }
@@ -265,6 +301,9 @@ func (m *Manager) ApplyToStateManager(stateManager *core.StateManager) {
 		handedness = core.RightHanded
 	}
 	stateManager.SetHandedness(&handedness)
+
+	// Apply swing-stick preference
+	stateManager.SetSwingStickMode(core.ParseSwingStickMode(m.settings.SwingStickMode))
 
 	// Apply camera settings
 	stateManager.SetCameraURL(&m.settings.CameraURL)

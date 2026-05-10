@@ -339,6 +339,42 @@
                             </div>
                             <p class="helper-text">This setting is saved and persists across sessions. The Square device will always be configured for your selected hand.</p>
                         </div>
+
+                        <div class="form-group">
+                            <label>Swing Stick Mode:</label>
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input type="radio" name="swingStickMode" value="off" checked>
+                                    <div>
+                                        <strong>Off</strong>
+                                        <p class="helper-text">Use a regular ball + club for every shot.</p>
+                                    </div>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="swingStickMode" value="driver-woods">
+                                    <div>
+                                        <strong>Driver &amp; Woods Only</strong>
+                                        <p class="helper-text">Use the Square swing stick for driver and woods; regular ball for irons, wedges, and putter.</p>
+                                    </div>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="swingStickMode" value="all">
+                                    <div>
+                                        <strong>All Clubs</strong>
+                                        <p class="helper-text">Use the Square swing stick for every shot.</p>
+                                    </div>
+                                </label>
+                            </div>
+                            <p class="helper-text">Mirrors the official Square app's swing-stick preference. Takes effect on the next ball-detection arming (e.g. when you switch clubs or after the next shot).</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="soundEnabled" checked>
+                                Audio cues (ready chime)
+                            </label>
+                            <p class="helper-text">Plays a short tone when the device reports the ball is in the hitting zone. Useful when you don't want to keep glancing at the device.</p>
+                        </div>
                     </div>
                 </div>
 

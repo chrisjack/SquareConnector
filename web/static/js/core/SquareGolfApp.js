@@ -245,6 +245,13 @@ export class SquareGolfApp {
         document.querySelectorAll('input[name="handedness"]').forEach(radio => {
             radio.addEventListener('change', () => this.saveSettings());
         });
+        document.querySelectorAll('input[name="swingStickMode"]').forEach(radio => {
+            radio.addEventListener('change', () => this.saveSettings());
+        });
+        const soundEnabledEl = document.getElementById('soundEnabled');
+        if (soundEnabledEl) {
+            soundEnabledEl.addEventListener('change', () => this.saveSettings());
+        }
     }
 
     async handleHandednessChange(handedness) {
@@ -868,6 +875,17 @@ export class SquareGolfApp {
         this.currentHandedness = handedness;
         this.updateHandednessDisplay(handedness);
 
+        const swingStickMode = settings.swingStickMode || 'off';
+        const swingStickRadio = document.querySelector(`input[name="swingStickMode"][value="${swingStickMode}"]`);
+        if (swingStickRadio) swingStickRadio.checked = true;
+
+        // Default sound enabled to true if absent (first run before
+        // server has the field populated).
+        const soundEnabled = settings.soundEnabled !== false;
+        const soundEnabledEl = document.getElementById('soundEnabled');
+        if (soundEnabledEl) soundEnabledEl.checked = soundEnabled;
+        this.soundEnabled = soundEnabled;
+
         const gsproIP = document.getElementById('gsproIP');
         const gsproPort = document.getElementById('gsproPort');
         const gsproAutoConnect = document.getElementById('gsproAutoConnect');
@@ -893,6 +911,9 @@ export class SquareGolfApp {
     async saveSettings() {
         const spinMode = document.querySelector('input[name="spinMode"]:checked')?.value;
         const handedness = document.querySelector('input[name="handedness"]:checked')?.value;
-        await this.settingsManager.save({ spinMode, handedness });
+        const swingStickMode = document.querySelector('input[name="swingStickMode"]:checked')?.value || 'off';
+        const soundEnabled = !!document.getElementById('soundEnabled')?.checked;
+        this.soundEnabled = soundEnabled;
+        await this.settingsManager.save({ spinMode, handedness, swingStickMode, soundEnabled });
     }
 }

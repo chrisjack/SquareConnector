@@ -93,6 +93,8 @@ type AppSettings struct {
 	DeviceName              string `json:"deviceName"`
 	SpinMode                string `json:"spinMode"`
 	Handedness              string `json:"handedness"`
+	// SwingStickMode: "off" | "driver-woods" | "all"
+	SwingStickMode          string `json:"swingStickMode"`
 	GSProIP                 string `json:"gsproIP"`
 	GSProPort               int    `json:"gsproPort"`
 	GSProAutoConnect        bool   `json:"gsproAutoConnect"`
@@ -102,6 +104,8 @@ type AppSettings struct {
 	OpenConnectIP           string `json:"openConnectIP"`
 	OpenConnectPort         int    `json:"openConnectPort"`
 	OpenConnectAutoConnect  bool   `json:"openConnectAutoConnect"`
+	// SoundEnabled: in-app audio cues (e.g. ready chime).
+	SoundEnabled            bool   `json:"soundEnabled"`
 }
 
 type FeatureFlags struct {
@@ -783,6 +787,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			DeviceName:              settings.DeviceName,
 			SpinMode:                settings.SpinMode,
 			Handedness:              settings.Handedness,
+			SwingStickMode:          settings.SwingStickMode,
 			GSProIP:                 settings.GSProIP,
 			GSProPort:               settings.GSProPort,
 			GSProAutoConnect:        settings.GSProAutoConnect,
@@ -792,6 +797,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			OpenConnectIP:           settings.OpenConnectIP,
 			OpenConnectPort:         settings.OpenConnectPort,
 			OpenConnectAutoConnect:  settings.OpenConnectAutoConnect,
+			SoundEnabled:            settings.SoundEnabled,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(appSettings)
@@ -806,6 +812,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		cfg.SetDeviceName(appSettings.DeviceName)
 		cfg.SetSpinMode(appSettings.SpinMode)
 		cfg.SetHandedness(appSettings.Handedness)
+		cfg.SetSwingStickMode(appSettings.SwingStickMode)
+		cfg.SetSoundEnabled(appSettings.SoundEnabled)
 		cfg.SetGSProIP(appSettings.GSProIP)
 		cfg.SetGSProPort(appSettings.GSProPort)
 		cfg.SetGSProAutoConnect(appSettings.GSProAutoConnect)
@@ -832,6 +840,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			handedness = core.RightHanded
 		}
 		s.stateManager.SetHandedness(&handedness)
+
+		// Apply swing-stick preference to state so the next
+		// ActivateBallDetection picks the right BLE command.
+		s.stateManager.SetSwingStickMode(core.ParseSwingStickMode(appSettings.SwingStickMode))
 
 		w.WriteHeader(http.StatusOK)
 	}

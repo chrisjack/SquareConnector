@@ -20,10 +20,17 @@ export class SettingsManager {
 
     async save(newSettings) {
         try {
-            const response = await this.api.post('/api/settings', newSettings);
+            // Merge with the last loaded settings before POSTing. The
+            // server-side handleSettings handler unconditionally calls
+            // every per-field setter, so fields omitted from the
+            // payload would be persisted as their JSON zero values
+            // (e.g. GSProIP would be wiped to ""). Sending a full
+            // object preserves all unrelated fields.
+            const merged = { ...this.settings, ...newSettings };
+            const response = await this.api.post('/api/settings', merged);
 
             if (response.ok) {
-                this.settings = { ...this.settings, ...newSettings };
+                this.settings = merged;
                 this.eventBus.emit('settings:saved', this.settings);
                 return { success: true };
             } else {
