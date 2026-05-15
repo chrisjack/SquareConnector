@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,10 +21,10 @@ var (
 func GetLaunchMonitorInstance(sm *StateManager, btManager *BluetoothManager) *LaunchMonitor {
 	launchMonitorOnce.Do(func() {
 		launchMonitorInstance = &LaunchMonitor{
-			stateManager:    sm,
-			sequence:        0,
-			bluetoothClient: btManager.GetClient(),
+			stateManager: sm,
+			sequence:     0,
 		}
+		launchMonitorInstance.storeClient(btManager.GetClient())
 	})
 	return launchMonitorInstance
 }
@@ -40,7 +41,21 @@ type LaunchMonitor struct {
 	sequenceMutex     sync.Mutex
 	heartbeatCancel   context.CancelFunc
 	heartbeatCancelMu sync.Mutex
-	bluetoothClient   BluetoothClient
+
+	// bluetoothClient is read from many goroutines (notification
+	// handler, heartbeat ticker, deferred re-arm goroutines, GSPro ack
+	// path) and written from the main connection path on reconnect.
+	// Reads of an interface variable are not atomic (a type-pointer +
+	// data-pointer pair), so we serialise via atomic.Pointer to
+	// eliminate torn-read panics during reconnect.
+	bluetoothClient atomic.Pointer[BluetoothClient]
+
+	// clientGeneration is bumped whenever the BLE client is swapped
+	// out or the device disconnects. Deferred goroutines (fallback
+	// re-arm, post-shot re-arm) capture it before sleeping and bail
+	// if it changed, so they can't send arming commands on a stale
+	// or freshly-swapped client mid-reconnect.
+	clientGeneration atomic.Uint64
 
 	// Re-arm coalescing. After a shot, multiple paths may try to
 	// re-arm ball detection in rapid succession (club-metrics
@@ -50,8 +65,44 @@ type LaunchMonitor struct {
 	// reporting subsequent low-energy shots — particularly very short
 	// putts. We coalesce all re-arms within a short window to a
 	// single BLE writes pair.
-	rearmMu       sync.Mutex
-	lastRearmAt   time.Time
+	rearmMu     sync.Mutex
+	lastRearmAt time.Time
+
+	// Ball-metrics dedup. The device occasionally re-emits the same
+	// 0x11 0x02 frame in the gap before the follow-up club-metrics
+	// notification arrives, so we need to drop true duplicates. But
+	// "duplicate" must be bounded in time: very short putts produce
+	// payloads that are almost entirely zeroes (no VLA, no spin,
+	// quantized ball speed at the device's detection floor), so two
+	// physically distinct tap-ins can easily produce byte-identical
+	// frames. Without a time bound, the second tap-in is silently
+	// dropped — exactly the "short putt didn't register" complaint.
+	dedupMu        sync.Mutex
+	lastShotRawHex string
+	lastShotAt     time.Time
+}
+
+// getClient returns the current bluetooth client, or nil if none is set.
+// Safe to call from any goroutine.
+func (lm *LaunchMonitor) getClient() BluetoothClient {
+	p := lm.bluetoothClient.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// storeClient atomically replaces the bluetooth client and bumps the
+// generation counter so any in-flight deferred goroutines (re-arms,
+// fallback arms) abort when they wake up instead of writing to the
+// now-stale client.
+func (lm *LaunchMonitor) storeClient(c BluetoothClient) {
+	if c == nil {
+		lm.bluetoothClient.Store(nil)
+	} else {
+		lm.bluetoothClient.Store(&c)
+	}
+	lm.clientGeneration.Add(1)
 }
 
 // rearmCoalesceWindow is the minimum time between two ActivateBallDetection
@@ -60,9 +111,16 @@ type LaunchMonitor struct {
 // call would only race against it.
 const rearmCoalesceWindow = 800 * time.Millisecond
 
+// shotDedupWindow is how long an identical raw ball-metrics frame is
+// treated as a duplicate of the previous one. Comfortably covers any
+// device-side re-emit (observed within a few hundred ms) and sits well
+// below any realistic re-shot cadence — even a rapid tap-in is gated by
+// the ~500ms re-arm delay plus user setup time.
+const shotDedupWindow = 1500 * time.Millisecond
+
 // UpdateBluetoothClient updates the bluetooth client reference
 func (lm *LaunchMonitor) UpdateBluetoothClient(client BluetoothClient) {
-	lm.bluetoothClient = client
+	lm.storeClient(client)
 }
 
 // NotificationHandler handles BLE notifications
@@ -173,57 +231,57 @@ func (lm *LaunchMonitor) HandleShotBallMetrics(bytesList []string) {
 		return
 	}
 
-	// Update state manager with ball metrics
-	lastBallMetrics := lm.stateManager.GetLastBallMetrics()
+	rawDataStr := strings.Join(shotMetrics.RawData, " ")
 
-	// Convert RawData to string for comparison and storage
-	rawDataStr := ""
-	for i, b := range shotMetrics.RawData {
-		if i > 0 {
-			rawDataStr += " "
+	// Time-bounded dedup. The device may re-emit the same ball-metrics
+	// frame within a short window while we wait for the follow-up
+	// club-metrics notification — drop those. After the window expires,
+	// an identical frame is a new shot, which is the *normal* case for
+	// consecutive tap-in putts whose payloads are essentially all
+	// zeroes.
+	lm.dedupMu.Lock()
+	now := time.Now()
+	if rawDataStr == lm.lastShotRawHex && !lm.lastShotAt.IsZero() && now.Sub(lm.lastShotAt) < shotDedupWindow {
+		elapsed := now.Sub(lm.lastShotAt)
+		// Refresh the timestamp so a stuck re-emit storm doesn't gradually leak through.
+		lm.lastShotAt = now
+		lm.dedupMu.Unlock()
+		log.Printf("LaunchMonitor: Ball metrics deduped (identical raw data, %.0fms since last) — type=%s speed=%.2f m/s",
+			float64(elapsed)/float64(time.Millisecond), shotMetrics.ShotType, shotMetrics.BallSpeedMPS)
+		return
+	}
+	lm.lastShotRawHex = rawDataStr
+	lm.lastShotAt = now
+	lm.dedupMu.Unlock()
+
+	log.Printf("LaunchMonitor: Ball metrics — type=%s speed=%.2f m/s VLA=%.2f° HLA=%.2f° spin=%d rpm",
+		shotMetrics.ShotType,
+		shotMetrics.BallSpeedMPS,
+		shotMetrics.VerticalAngle,
+		shotMetrics.HorizontalAngle,
+		shotMetrics.TotalspinRPM)
+	lm.stateManager.SetLastBallMetrics(shotMetrics)
+
+	// Automatically request club metrics after receiving shot metrics
+	if c := lm.getClient(); c != nil && c.IsConnected() {
+		seq := lm.getNextSequence()
+		clubMetricsCommand := RequestClubMetricsCommand(seq)
+
+		err := lm.SendCommand(clubMetricsCommand)
+		if err != nil {
+			log.Printf("Failed to request club metrics: %v", err)
 		}
-		rawDataStr += b
 	}
 
-	// Check if this is a new shot by comparing raw data
-	var lastRawData string
-	if lastBallMetrics != nil {
-		lastRawData = strings.Join(lastBallMetrics.RawData, " ")
-	}
-
-	if lastBallMetrics == nil || lastRawData != rawDataStr {
-		log.Printf("LaunchMonitor: Ball metrics — type=%s speed=%.2f m/s VLA=%.2f° HLA=%.2f° spin=%d rpm",
-			shotMetrics.ShotType,
-			shotMetrics.BallSpeedMPS,
-			shotMetrics.VerticalAngle,
-			shotMetrics.HorizontalAngle,
-			shotMetrics.TotalspinRPM)
-		lm.stateManager.SetLastBallMetrics(shotMetrics)
-
-		// Automatically request club metrics after receiving shot metrics
-		if lm.bluetoothClient != nil && lm.bluetoothClient.IsConnected() {
-			seq := lm.getNextSequence()
-			clubMetricsCommand := RequestClubMetricsCommand(seq)
-
-			err := lm.SendCommand(clubMetricsCommand)
-			if err != nil {
-				log.Printf("Failed to request club metrics: %v", err)
-			}
-		}
-
-		// Fallback re-arm: if a club-metrics response (0x11 0x07 …)
-		// never arrives — which we have observed for very short putts
-		// where the device emits ball metrics but no follow-up — the
-		// reactivate hooked off HandleShotClubMetrics never fires and
-		// the device sits idle, silently dropping the next short putt.
-		// Schedule a deferred re-arm and let the club-metrics path
-		// pre-empt it via the coalescing window if the response does
-		// arrive in time.
-		go lm.scheduleFallbackRearm(shotMetrics)
-	} else {
-		log.Printf("LaunchMonitor: Ball metrics deduped (identical raw data) — type=%s speed=%.2f m/s",
-			shotMetrics.ShotType, shotMetrics.BallSpeedMPS)
-	}
+	// Fallback re-arm: if a club-metrics response (0x11 0x07 …)
+	// never arrives — which we have observed for very short putts
+	// where the device emits ball metrics but no follow-up — the
+	// reactivate hooked off HandleShotClubMetrics never fires and
+	// the device sits idle, silently dropping the next short putt.
+	// Schedule a deferred re-arm and let the club-metrics path
+	// pre-empt it via the coalescing window if the response does
+	// arrive in time.
+	go lm.scheduleFallbackRearm(shotMetrics)
 }
 
 // scheduleFallbackRearm waits ~2.5 s for the device to either deliver
@@ -233,9 +291,20 @@ func (lm *LaunchMonitor) HandleShotBallMetrics(bytesList []string) {
 // trigger one ourselves. The coalescing window in
 // ReactivateBallDetectionFromSource keeps this from racing if a faster
 // path also fires.
+//
+// Bound to the BLE client generation captured at scheduling time: if the
+// device disconnects or the client is swapped (e.g. reconnect) before we
+// wake up, we abort instead of writing arming commands to a stale or
+// newly-attached client.
 func (lm *LaunchMonitor) scheduleFallbackRearm(shotMetrics *BallMetrics) {
+	gen := lm.clientGeneration.Load()
 	time.Sleep(2500 * time.Millisecond)
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if lm.clientGeneration.Load() != gen {
+		log.Printf("LaunchMonitor: Fallback re-arm cancelled — client generation changed during 2.5s wait")
+		return
+	}
+	c := lm.getClient()
+	if c == nil || !c.IsConnected() {
 		return
 	}
 	lm.ReactivateBallDetectionFromSource(fmt.Sprintf("fallback-%s", shotMetrics.ShotType))
@@ -258,7 +327,8 @@ func (lm *LaunchMonitor) HandleShotClubMetrics(bytesList []string) {
 
 // SendCommand sends a command to the BLE device
 func (lm *LaunchMonitor) SendCommand(commandHex string) error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	c := lm.getClient()
+	if c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -267,7 +337,7 @@ func (lm *LaunchMonitor) SendCommand(commandHex string) error {
 		return fmt.Errorf("invalid hex command: %w", err)
 	}
 
-	err = lm.bluetoothClient.WriteCharacteristic(CommandCharUUID, commandBytes)
+	err = c.WriteCharacteristic(CommandCharUUID, commandBytes)
 	if err != nil {
 		return fmt.Errorf("error sending command: %w", err)
 	}
@@ -277,11 +347,12 @@ func (lm *LaunchMonitor) SendCommand(commandHex string) error {
 
 // ReadBatteryLevel reads the battery level from the device
 func (lm *LaunchMonitor) ReadBatteryLevel() (int, error) {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	c := lm.getClient()
+	if c == nil || !c.IsConnected() {
 		return 0, fmt.Errorf("not connected to device")
 	}
 
-	batteryLevelBytes, err := lm.bluetoothClient.ReadCharacteristic(BatteryLevelCharUUID)
+	batteryLevelBytes, err := c.ReadCharacteristic(BatteryLevelCharUUID)
 	if err != nil {
 		return 0, fmt.Errorf("could not read battery level: %w", err)
 	}
@@ -309,7 +380,7 @@ func (lm *LaunchMonitor) ReadBatteryLevel() (int, error) {
 // causing the next low-energy shot (typically a short putt) to be
 // silently dropped.
 func (lm *LaunchMonitor) ActivateBallDetection() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -380,7 +451,7 @@ func (lm *LaunchMonitor) ActivateBallDetection() error {
 // putts cleanly; sending only the DetectBall arm is consistent with
 // what the device actually needs to keep listening.
 func (lm *LaunchMonitor) rearmDetectionOnly() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -400,7 +471,7 @@ func (lm *LaunchMonitor) rearmDetectionOnly() error {
 
 // DeactivateBallDetection deactivates ball detection mode
 func (lm *LaunchMonitor) DeactivateBallDetection() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -450,10 +521,21 @@ func (lm *LaunchMonitor) ReactivateBallDetectionFromSource(source string) {
 	lm.rearmMu.Unlock()
 
 	go func() {
+		// Capture the BLE client generation now so a disconnect or
+		// client swap during the 500ms wait below cancels the re-arm
+		// instead of writing arming commands to a stale client.
+		gen := lm.clientGeneration.Load()
+
 		// Small delay to let the device finish processing the shot
 		time.Sleep(500 * time.Millisecond)
 
-		if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+		if lm.clientGeneration.Load() != gen {
+			log.Printf("LaunchMonitor: Skip re-arm from %s — client generation changed during wait", source)
+			return
+		}
+
+		c := lm.getClient()
+		if c == nil || !c.IsConnected() {
 			log.Printf("LaunchMonitor: Skip re-arm from %s — not connected", source)
 			return
 		}
@@ -508,7 +590,7 @@ func (lm *LaunchMonitor) startHeartbeatTask() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if lm.bluetoothClient != nil && lm.bluetoothClient.IsConnected() {
+				if c := lm.getClient(); c != nil && c.IsConnected() {
 					seq := lm.getNextSequence()
 					command := HeartbeatCommand(seq)
 					err := lm.SendCommand(command)
@@ -523,7 +605,7 @@ func (lm *LaunchMonitor) startHeartbeatTask() {
 
 // ManageHeartbeat initializes and manages the heartbeat communication with the device
 func (lm *LaunchMonitor) ManageHeartbeat() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -552,7 +634,7 @@ func (lm *LaunchMonitor) SetupNotifications(btManager *BluetoothManager) {
 
 	// Register pre-disconnect hook to try to deactivate ball detection before disconnection
 	btManager.SetPreDisconnectHook(func() {
-		if lm.bluetoothClient != nil && lm.bluetoothClient.IsConnected() {
+		if c := lm.getClient(); c != nil && c.IsConnected() {
 			log.Println("LaunchMonitor: Attempting to deactivate ball detection before disconnection")
 			err := lm.DeactivateBallDetection()
 			if err != nil {
@@ -584,6 +666,12 @@ func (lm *LaunchMonitor) SetupNotifications(btManager *BluetoothManager) {
 func (lm *LaunchMonitor) HandleBluetoothDisconnect() {
 	log.Println("LaunchMonitor: Bluetooth disconnected - resetting ball detection state")
 
+	// Bump the client generation so any in-flight deferred goroutines
+	// (fallback re-arm, post-shot re-arm) abort when they wake up
+	// instead of writing arming commands to a freshly-reconnected
+	// client 2.5s late, past the rearm-coalesce window.
+	lm.clientGeneration.Add(1)
+
 	// Reset ball detection state in the state manager
 	lm.stateManager.SetBallDetected(false)
 	lm.stateManager.SetBallReady(false)
@@ -600,7 +688,7 @@ func (lm *LaunchMonitor) HandleBluetoothDisconnect() {
 
 // StartAlignment starts alignment mode
 func (lm *LaunchMonitor) StartAlignment() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -649,7 +737,7 @@ func (lm *LaunchMonitor) StartAlignment() error {
 
 // StopAlignment stops alignment mode and saves calibration (OK button)
 func (lm *LaunchMonitor) StopAlignment() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -673,7 +761,7 @@ func (lm *LaunchMonitor) StopAlignment() error {
 
 // CancelAlignment cancels alignment mode without saving calibration (Cancel button)
 func (lm *LaunchMonitor) CancelAlignment() error {
-	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+	if c := lm.getClient(); c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
@@ -699,12 +787,13 @@ func (lm *LaunchMonitor) CancelAlignment() error {
 func (lm *LaunchMonitor) RequestFirmwareVersion() error {
 	log.Printf("LaunchMonitor: RequestFirmwareVersion called")
 
-	if lm.bluetoothClient == nil {
+	c := lm.getClient()
+	if c == nil {
 		log.Printf("LaunchMonitor: bluetoothClient is nil")
 		return fmt.Errorf("bluetoothClient is nil")
 	}
 
-	if !lm.bluetoothClient.IsConnected() {
+	if !c.IsConnected() {
 		log.Printf("LaunchMonitor: device not connected")
 		return fmt.Errorf("not connected to device")
 	}

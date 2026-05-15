@@ -206,6 +206,13 @@ func (b *Base) ResetReconnectionState() {
 }
 
 func (b *Base) SendMessage(data []byte) error {
+	// NOTE: we intentionally do NOT take ConnectMutex here. Connect()
+	// holds that lock and calls Protocol.OnConnected() while still
+	// holding it, and OnConnected typically calls back into SendMessage
+	// (e.g. to send an init handshake). Taking the lock here would
+	// deadlock every sim Connect. There is a known small race where
+	// Disconnect can nil b.Socket between our check and our Write —
+	// that's tracked as a follow-up and needs an atomic-Socket fix.
 	if !b.Connected || b.Socket == nil {
 		return fmt.Errorf("not connected to %s", b.Protocol.Name())
 	}

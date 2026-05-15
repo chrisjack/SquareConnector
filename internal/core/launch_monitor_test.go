@@ -30,7 +30,7 @@ func newTestLaunchMonitor(t *testing.T) (*StateManager, *LaunchMonitor, *MockBlu
 func TestNewLaunchMonitor(t *testing.T) {
 	sm, lm, mockClient, _ := newTestLaunchMonitor(t)
 
-	if lm == nil || lm.stateManager != sm || lm.bluetoothClient != mockClient || lm.sequence != 0 {
+	if lm == nil || lm.stateManager != sm || lm.getClient() != mockClient || lm.sequence != 0 {
 		t.Error("LaunchMonitor not properly initialized")
 	}
 }
@@ -966,5 +966,106 @@ func TestHeartbeatCommand_ExactBytes(t *testing.T) {
 				t.Errorf("Expected command %x, got %x", tc.expected, write.Data)
 			}
 		})
+	}
+}
+
+// shortPuttFrame builds a 17-byte ball-metrics frame for a short putt with
+// the given centi-m/s speed and everything else zero. Matches the shape we
+// see in the wild for tap-ins: VLA, spins, axis all flat.
+func shortPuttFrame(speedCentiMPS uint16) []byte {
+	return []byte{
+		0x11, 0x02, 0x13, // putt header
+		byte(speedCentiMPS), byte(speedCentiMPS >> 8), // ball speed (little-endian)
+		0x00, 0x00, // vertical angle
+		0x00, 0x00, // horizontal angle
+		0x00, 0x00, // total spin
+		0x00, 0x00, // spin axis
+		0x00, 0x00, // backspin
+		0x00, 0x00, // sidespin
+	}
+}
+
+// TestHandleShotBallMetrics_DuplicateWithinWindowIsDropped verifies that
+// the device re-emitting an identical 0x11 0x02 frame within the dedup
+// window is treated as a single shot. This is the case the dedup logic
+// exists to handle.
+func TestHandleShotBallMetrics_DuplicateWithinWindowIsDropped(t *testing.T) {
+	sm, lm, mockClient, _ := newTestLaunchMonitor(t)
+	mockClient.connected = true
+
+	var shotCount int
+	sm.RegisterLastBallMetricsCallback(func(oldValue, newValue *BallMetrics) {
+		if newValue != nil {
+			shotCount++
+		}
+	})
+
+	frame := shortPuttFrame(107) // 1.07 m/s
+	lm.NotificationHandler("", frame)
+	lm.NotificationHandler("", frame) // immediate device re-emit
+
+	if shotCount != 1 {
+		t.Errorf("Expected 1 shot to register for back-to-back identical frames, got %d", shotCount)
+	}
+}
+
+// TestHandleShotBallMetrics_DuplicateAfterWindowRegisters is the bug fix:
+// two short putts that produce byte-identical frames but are separated by
+// more than the dedup window must both register. Previously the second
+// was silently dropped, leaving users with "short putts not registering".
+func TestHandleShotBallMetrics_DuplicateAfterWindowRegisters(t *testing.T) {
+	sm, lm, mockClient, _ := newTestLaunchMonitor(t)
+	mockClient.connected = true
+
+	var shotCount int
+	sm.RegisterLastBallMetricsCallback(func(oldValue, newValue *BallMetrics) {
+		if newValue != nil {
+			shotCount++
+		}
+	})
+
+	frame := shortPuttFrame(107) // tap-in: 1.07 m/s, all other fields zero
+	lm.NotificationHandler("", frame)
+
+	// Simulate enough time passing that the dedup window has expired,
+	// without making the test sleep for real.
+	lm.dedupMu.Lock()
+	lm.lastShotAt = time.Now().Add(-(shotDedupWindow + 100*time.Millisecond))
+	lm.dedupMu.Unlock()
+
+	lm.NotificationHandler("", frame) // second tap-in, byte-identical
+
+	if shotCount != 2 {
+		t.Errorf("Expected both tap-in putts to register, got %d (the bug: the second short putt was silently dropped)", shotCount)
+	}
+
+	metrics := sm.GetLastBallMetrics()
+	if metrics == nil {
+		t.Fatal("Expected last ball metrics to be set")
+	}
+	if metrics.ShotType != ShotTypePutt {
+		t.Errorf("Expected putt shot type, got %v", metrics.ShotType)
+	}
+}
+
+// TestHandleShotBallMetrics_DistinctFramesAlwaysRegister verifies that
+// two short putts with different bytes both register even when sent
+// back-to-back — the dedup only applies to byte-identical frames.
+func TestHandleShotBallMetrics_DistinctFramesAlwaysRegister(t *testing.T) {
+	sm, lm, mockClient, _ := newTestLaunchMonitor(t)
+	mockClient.connected = true
+
+	var shotCount int
+	sm.RegisterLastBallMetricsCallback(func(oldValue, newValue *BallMetrics) {
+		if newValue != nil {
+			shotCount++
+		}
+	})
+
+	lm.NotificationHandler("", shortPuttFrame(107)) // 1.07 m/s
+	lm.NotificationHandler("", shortPuttFrame(108)) // 1.08 m/s — one centimetre/sec different
+
+	if shotCount != 2 {
+		t.Errorf("Expected 2 shots to register for distinct frames, got %d", shotCount)
 	}
 }

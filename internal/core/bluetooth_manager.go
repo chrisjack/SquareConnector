@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,7 +33,12 @@ func NewBluetoothManager(stateManager *StateManager) *BluetoothManager {
 
 // BluetoothManager is responsible for handling Bluetooth connection logic
 type BluetoothManager struct {
-	bluetoothClient     BluetoothClient
+	// bluetoothClient is read from many goroutines (connection thread,
+	// notification callbacks, web handlers) and written when the client
+	// is initialised or swapped on reconnect. Interface-value reads are
+	// not atomic in Go (type-pointer + data-pointer pair), so we serialise
+	// via atomic.Pointer to eliminate torn-read panics during reconnect.
+	bluetoothClient     atomic.Pointer[BluetoothClient]
 	stateManager        *StateManager
 	currentCtx          context.Context
 	currentCancelFunc   context.CancelFunc
@@ -43,20 +49,34 @@ type BluetoothManager struct {
 	preDisconnectHook   func() // Hook to run before disconnecting
 }
 
-// GetClient returns the current Bluetooth client
+// storeClient atomically replaces the bluetooth client pointer.
+func (bm *BluetoothManager) storeClient(c BluetoothClient) {
+	if c == nil {
+		bm.bluetoothClient.Store(nil)
+	} else {
+		bm.bluetoothClient.Store(&c)
+	}
+}
+
+// GetClient returns the current Bluetooth client (may be nil).
+// Safe to call from any goroutine.
 func (bm *BluetoothManager) GetClient() BluetoothClient {
-	return bm.bluetoothClient
+	p := bm.bluetoothClient.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // SetClient sets a new Bluetooth client
 func (bm *BluetoothManager) SetClient(client BluetoothClient) {
-	bm.bluetoothClient = client
+	bm.storeClient(client)
 	bm.setupPhaseCallback()
 }
 
 // setupPhaseCallback sets up the phase change callback on the Bluetooth client
 func (bm *BluetoothManager) setupPhaseCallback() {
-	if tinyGoClient, ok := bm.bluetoothClient.(*TinyGoBluetoothClient); ok {
+	if tinyGoClient, ok := bm.GetClient().(*TinyGoBluetoothClient); ok {
 		tinyGoClient.SetPhaseChangeCallback(func(phase ConnectionPhase) {
 			switch phase {
 			case PhaseScanning:
@@ -82,7 +102,7 @@ func (bm *BluetoothManager) StartBluetoothConnection(deviceName, deviceAddress s
 	}
 
 	// Check if the Bluetooth client is nil and reinitialize if needed
-	if bm.bluetoothClient == nil {
+	if bm.GetClient() == nil {
 		log.Println("BluetoothManager: Bluetooth client is nil, reinitializing...")
 
 		// Add a small delay before reinitialization to ensure resources are fully released
@@ -107,7 +127,7 @@ func (bm *BluetoothManager) StartBluetoothConnection(deviceName, deviceAddress s
 		}
 
 		// Set the new client
-		bm.bluetoothClient = bleClient
+		bm.storeClient(bleClient)
 		bm.setupPhaseCallback()
 		log.Println("BluetoothManager: Successfully reinitialized Bluetooth client")
 	}
@@ -204,7 +224,8 @@ func (bm *BluetoothManager) SetNotificationHandler(handler func(uuid string, dat
 
 // EnableNotifications enables BLE notifications
 func (bm *BluetoothManager) EnableNotifications() error {
-	if bm.bluetoothClient == nil {
+	c := bm.GetClient()
+	if c == nil {
 		return fmt.Errorf("bluetooth client is nil")
 	}
 
@@ -213,7 +234,7 @@ func (bm *BluetoothManager) EnableNotifications() error {
 	}
 
 	// Enable main notifications
-	err := bm.bluetoothClient.StartNotifications(NotificationCharUUID, func(data []byte) {
+	err := c.StartNotifications(NotificationCharUUID, func(data []byte) {
 		bm.notificationHandler(NotificationCharUUID, data)
 	})
 	if err != nil {
@@ -221,13 +242,12 @@ func (bm *BluetoothManager) EnableNotifications() error {
 	}
 
 	// Enable battery level notifications
-	err = bm.bluetoothClient.StartNotifications(BatteryLevelCharUUID, func(data []byte) {
+	err = c.StartNotifications(BatteryLevelCharUUID, func(data []byte) {
 		bm.notificationHandler(BatteryLevelCharUUID, data)
 	})
 	if err != nil {
 		log.Printf("Could not enable battery level notifications: %v", err)
 		// Continue even if battery notifications fail
-	} else {
 	}
 
 	return nil
@@ -235,11 +255,12 @@ func (bm *BluetoothManager) EnableNotifications() error {
 
 // WriteCharacteristic writes a value to a specific characteristic UUID
 func (bm *BluetoothManager) WriteCharacteristic(characteristicUUID string, data []byte) error {
-	if bm.bluetoothClient == nil || !bm.bluetoothClient.IsConnected() {
+	c := bm.GetClient()
+	if c == nil || !c.IsConnected() {
 		return fmt.Errorf("not connected to device")
 	}
 
-	err := bm.bluetoothClient.WriteCharacteristic(characteristicUUID, data)
+	err := c.WriteCharacteristic(characteristicUUID, data)
 	if err != nil {
 		return fmt.Errorf("error writing to characteristic %s: %w", characteristicUUID, err)
 	}
@@ -249,11 +270,12 @@ func (bm *BluetoothManager) WriteCharacteristic(characteristicUUID string, data 
 
 // ReadBatteryLevel reads the battery level from the device
 func (bm *BluetoothManager) ReadBatteryLevel() (int, error) {
-	if bm.bluetoothClient == nil || !bm.bluetoothClient.IsConnected() {
+	c := bm.GetClient()
+	if c == nil || !c.IsConnected() {
 		return 0, fmt.Errorf("not connected to device")
 	}
 
-	batteryLevelBytes, err := bm.bluetoothClient.ReadCharacteristic(BatteryLevelCharUUID)
+	batteryLevelBytes, err := c.ReadCharacteristic(BatteryLevelCharUUID)
 	if err != nil {
 		return 0, fmt.Errorf("could not read battery level: %w", err)
 	}
@@ -272,11 +294,12 @@ func (bm *BluetoothManager) ReadBatteryLevel() (int, error) {
 
 // ReadFirmwareVersion reads the firmware version from the device
 func (bm *BluetoothManager) ReadFirmwareVersion() (string, error) {
-	if bm.bluetoothClient == nil || !bm.bluetoothClient.IsConnected() {
+	c := bm.GetClient()
+	if c == nil || !c.IsConnected() {
 		return "", fmt.Errorf("not connected to device")
 	}
 
-	versionBytes, err := bm.bluetoothClient.ReadCharacteristic(FirmwareVersionCharUUID)
+	versionBytes, err := c.ReadCharacteristic(FirmwareVersionCharUUID)
 	if err != nil {
 		return "", fmt.Errorf("could not read firmware version: %w", err)
 	}
@@ -312,18 +335,23 @@ func (bm *BluetoothManager) ReadFirmwareVersion() (string, error) {
 func (bm *BluetoothManager) connectDevice(ctx context.Context, deviceName, deviceAddress string) error {
 	log.Printf("BluetoothManager: Connecting to device: %s", deviceName)
 
+	c := bm.GetClient()
+	if c == nil {
+		return fmt.Errorf("bluetooth client is nil")
+	}
+
 	// Update state manager
 	bm.stateManager.SetConnectionStatus(ConnectionStatusConnecting)
 
 	// Connect to the device
-	err := bm.bluetoothClient.Connect(deviceName, deviceAddress)
+	err := c.Connect(deviceName, deviceAddress)
 	if err != nil {
 		log.Printf("BluetoothManager: Failed to connect to device: %v", err)
 		return fmt.Errorf("failed to connect to device: %w", err)
 	}
 
 	// Get the actual connected device name from the client
-	connectedDeviceName := bm.bluetoothClient.GetConnectedDeviceName()
+	connectedDeviceName := c.GetConnectedDeviceName()
 	log.Printf("BluetoothManager: Successfully connected to device: %s", connectedDeviceName)
 
 	// Update state with device name
@@ -360,12 +388,11 @@ func (bm *BluetoothManager) connectDevice(ctx context.Context, deviceName, devic
 
 // disconnectDevice disconnects from the BLE device
 func (bm *BluetoothManager) disconnectDevice() error {
-	if bm.bluetoothClient == nil {
+	client := bm.GetClient()
+	if client == nil {
 		return nil
 	}
 
-	// Make a local reference to client to ensure it's not nil during operations
-	client := bm.bluetoothClient
 	isConnected := client.IsConnected()
 
 	// Stop notifications first if connected
@@ -449,11 +476,12 @@ func (bm *BluetoothManager) Disconnect() {
 	bm.connectMutex.Lock()
 	defer bm.connectMutex.Unlock()
 
-	if !bm.bluetoothClient.IsConnected() {
+	c := bm.GetClient()
+	if c == nil || !c.IsConnected() {
 		return
 	}
 
-	bm.bluetoothClient.Disconnect()
+	c.Disconnect()
 	bm.stateManager.SetConnectionStatus(ConnectionStatusDisconnected)
 }
 
@@ -462,8 +490,8 @@ func (bm *BluetoothManager) Stop() {
 	bm.connectMutex.Lock()
 	defer bm.connectMutex.Unlock()
 
-	if bm.bluetoothClient != nil {
-		bm.bluetoothClient.Disconnect()
+	if c := bm.GetClient(); c != nil {
+		c.Disconnect()
 	}
 
 	bm.stateManager.SetConnectionStatus(ConnectionStatusDisconnected)
@@ -473,8 +501,13 @@ func (bm *BluetoothManager) Stop() {
 
 // connectToDevice handles the actual connection process
 func (bm *BluetoothManager) connectToDevice() error {
+	c := bm.GetClient()
+	if c == nil {
+		return fmt.Errorf("bluetooth client is nil")
+	}
+
 	// Get battery level before connecting
-	batteryLevelBytes, err := bm.bluetoothClient.ReadCharacteristic(BatteryLevelCharUUID)
+	batteryLevelBytes, err := c.ReadCharacteristic(BatteryLevelCharUUID)
 	if err != nil {
 		log.Printf("Failed to get battery level: %v", err)
 		// Non-fatal error, continue with connection
@@ -484,7 +517,7 @@ func (bm *BluetoothManager) connectToDevice() error {
 	}
 
 	// Connect to the device
-	err = bm.bluetoothClient.Connect("", "") // Empty strings for both parameters since we're using the client's default behavior
+	err = c.Connect("", "") // Empty strings for both parameters since we're using the client's default behavior
 	if err != nil {
 		return fmt.Errorf("failed to connect: %v", err)
 	}
@@ -493,7 +526,7 @@ func (bm *BluetoothManager) connectToDevice() error {
 	bm.stateManager.SetConnectionStatus(ConnectionStatusConnecting)
 
 	// Subscribe to notifications
-	err = bm.bluetoothClient.StartNotifications(NotificationCharUUID, func(data []byte) {
+	err = c.StartNotifications(NotificationCharUUID, func(data []byte) {
 		if bm.notificationHandler != nil {
 			bm.notificationHandler(NotificationCharUUID, data)
 		}
@@ -508,7 +541,7 @@ func (bm *BluetoothManager) connectToDevice() error {
 	bm.stateManager.SetDeviceDisplayName(&deviceName)
 
 	// Get battery level after connecting
-	batteryLevelBytes, err = bm.bluetoothClient.ReadCharacteristic(BatteryLevelCharUUID)
+	batteryLevelBytes, err = c.ReadCharacteristic(BatteryLevelCharUUID)
 	if err == nil {
 		batteryLevel := int(batteryLevelBytes[0])
 		bm.stateManager.SetBatteryLevel(&batteryLevel)
@@ -519,30 +552,33 @@ func (bm *BluetoothManager) connectToDevice() error {
 
 // StartScan starts scanning for SquareGolf devices
 func (bm *BluetoothManager) StartScan() error {
-	if bm.bluetoothClient == nil {
+	c := bm.GetClient()
+	if c == nil {
 		return fmt.Errorf("bluetooth client is nil")
 	}
 
-	return bm.bluetoothClient.StartScan("SquareGolf")
+	return c.StartScan("SquareGolf")
 }
 
 // StopScan stops scanning for devices
 func (bm *BluetoothManager) StopScan() error {
-	if bm.bluetoothClient == nil {
+	c := bm.GetClient()
+	if c == nil {
 		return fmt.Errorf("bluetooth client is nil")
 	}
 
-	bm.bluetoothClient.StopScan()
+	c.StopScan()
 	return nil
 }
 
 // GetDiscoveredDevices returns the list of discovered SquareGolf devices
 func (bm *BluetoothManager) GetDiscoveredDevices() []string {
-	if bm.bluetoothClient == nil {
+	c := bm.GetClient()
+	if c == nil {
 		return nil
 	}
 
-	return bm.bluetoothClient.GetDiscoveredDevices()
+	return c.GetDiscoveredDevices()
 }
 
 // SetPreDisconnectHook sets a function to be called before disconnecting

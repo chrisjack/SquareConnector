@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -192,10 +193,16 @@ func startCLI(config AppConfig, stateManager *core.StateManager, bluetoothManage
 	connectionTimeout := time.After(10 * time.Second)
 	connectionEstablished := make(chan struct{})
 
-	// Register a one-time callback for successful connection
+	// Register a one-time callback for successful connection. The
+	// connection status callback fires on every transition into
+	// Connected — including reconnects later in the session — so we
+	// gate the close with sync.Once. Without this, the second time
+	// the connection comes back the close-of-closed-channel panics
+	// the headless process.
+	var connectOnce sync.Once
 	stateManager.RegisterConnectionStatusCallback(func(oldValue, newValue core.ConnectionStatus) {
 		if newValue == core.ConnectionStatusConnected {
-			close(connectionEstablished)
+			connectOnce.Do(func() { close(connectionEstablished) })
 		}
 	})
 
