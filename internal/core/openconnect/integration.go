@@ -116,10 +116,17 @@ func (o *Integration) ProcessMessage(rawMessage string) {
 		o.handlePlayerMessage(&playerInfo)
 		o.handleReadyMessage()
 	case "Ball Data received", "Club & Ball Data received", "Shot received successfully":
+		// Use the lightweight re-arm (DetectBall only — no club command).
+		// Re-sending the club command on every shot has been observed to
+		// reset the device's per-club detection tuning. With a putter
+		// selected that wipes the low-energy tuning and causes the next
+		// short putt to be silently dropped at the BLE layer (no
+		// 0x11 0x02 frame emitted at all) — exactly the "putts under
+		// ~8ft don't register" reports. The GSPro path uses
+		// ReactivateBallDetectionFromSource for the same reason; this
+		// brings OpenConnect in line.
 		log.Printf("Received shot confirmation from OpenConnect: %s", baseMsg.Message)
-		if err := o.launchMonitor.ActivateBallDetection(); err != nil {
-			log.Printf("Failed to re-arm ball detection after shot: %v", err)
-		}
+		o.launchMonitor.ReactivateBallDetectionFromSource("openconnect-ack")
 	default:
 		log.Printf("Unknown OpenConnect message type: %s", baseMsg.Message)
 	}
